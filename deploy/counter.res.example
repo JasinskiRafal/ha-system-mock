@@ -1,0 +1,26 @@
+# Replace node names, addresses and backing devices on BOTH nodes.
+# The fence-peer and after-resync-target handlers are essential to integrate
+# DRBD fencing with Pacemaker. Confirm their paths in your drbd-utils package.
+resource counter {
+    options { auto-promote no; }
+    net {
+        protocol C;
+        fencing resource-and-stonith;
+    }
+    handlers {
+        fence-peer "/usr/lib/drbd/crm-fence-peer.9.sh";
+        after-resync-target "/usr/lib/drbd/crm-unfence-peer.9.sh";
+    }
+    on node1 {
+        device /dev/drbd0;
+        disk /dev/REPLACE_NODE1_DATA_DISK;
+        address 192.0.2.11:7788;
+        meta-disk internal;
+    }
+    on node2 {
+        device /dev/drbd0;
+        disk /dev/REPLACE_NODE2_DATA_DISK;
+        address 192.0.2.12:7788;
+        meta-disk internal;
+    }
+}

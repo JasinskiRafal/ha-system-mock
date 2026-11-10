@@ -1,0 +1,13 @@
+[Unit]
+Description=HA counter demo
+RequiresMountsFor=/srv/ha-counter
+After=network.target
+
+[Service]
+Type=simple
+ExecStartPre=/usr/bin/mountpoint -q /srv/ha-counter
+ExecStart=/usr/bin/python3 /opt/ha-counter/counter.py --database /srv/ha-counter/counter.db --port 8080
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
