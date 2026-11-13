@@ -1,5 +1,10 @@
 # Pacemaker / DRBD counter demo
 
+This guide targets **Ubuntu Server 26.04 LTS (amd64)**. It uses the stock
+26.04 repositories, including `universe`, and the Ubuntu generic kernel. Do
+not substitute package names from older Ubuntu releases: 26.04 splits the OCF
+and fencing agents into individual packages.
+
 A two-node active/passive HA demo for Ubuntu VMs. The counter is a small Python HTTP application with a SQLite database on a DRBD-replicated ext4 filesystem. Pacemaker controls DRBD promotion, the filesystem, the application and a floating IP; Corosync supplies cluster membership. The same application is installed on both nodes, but only the active node serves it. It automatically commits a counter increment about every half second, even with no browser open. The page polls for updates and reconnects after a failover; the optional button adds an extra increment.
 
 This repository is a starting point: the cluster setup below has not yet been exercised on the target VMs. Test all fencing and failover steps before relying on it. A failed request during failover may need retrying; do not automatically retry an increment after an ambiguous response because it might have committed.
@@ -10,7 +15,7 @@ This first exercise only needs Python and a network connection. Each VM runs its
 
 ### 1. Prepare the VMs
 
-1. Create two Ubuntu Server VMs in VirtualBox, ideally with the same Ubuntu release. Assign distinct hostnames, for example `node1` and `node2`.
+1. Create two **Ubuntu Server 26.04 LTS amd64** VMs in VirtualBox. Assign distinct hostnames, for example `node1` and `node2`.
 2. In each VM's VirtualBox network settings, select **Bridged Adapter** on a network interface connected to your LAN. Start both VMs and confirm that each has its own reachable LAN IP address. Bridging over Wi-Fi depends on the host and network; if a VM is unreachable, check the VirtualBox adapter and network first.
 3. Log in to each VM and install Python and curl:
 
@@ -53,7 +58,7 @@ When moving to DRBD, stop both standalone applications first. Their two local da
 
 ## VirtualBox preparation
 
-Create two Ubuntu Server VMs, preferably the same supported release (for example 24.04 LTS), each with a unique hostname, static LAN address, and a **separate empty virtual disk** of the same size for DRBD. The disk must not contain a filesystem or data to keep. Give each VM a bridged adapter on the same LAN as the other node and client. Bridging over Wi-Fi may have adapter limitations; verify the floating address can move and be reached from a third machine. Reserve a third unused LAN address outside DHCP allocation for the floating IP.
+Create two **Ubuntu Server 26.04 LTS amd64** VMs, each with a unique hostname, static LAN address, and a **separate empty virtual disk** of the same size for DRBD. The disk must not contain a filesystem or data to keep. Give each VM a bridged adapter on the same LAN as the other node and client. Bridging over Wi-Fi may have adapter limitations; verify the floating address can move and be reached from a third machine. Reserve a third unused LAN address outside DHCP allocation for the floating IP.
 
 You can host the VMs on separate computers or on one VirtualBox host. The latter cannot survive failure of that host. Each guest needs network access to both VirtualBox hosts' SSH endpoints, independently of the other guest. A host that powers off cannot execute its own fence agent; plan an independent power/fencing path or accept that failure to contact the host may prevent automatic recovery.
 
@@ -61,7 +66,54 @@ Record the guest hostnames, IPs, DRBD data disks, VIP/prefix, host SSH addresses
 
 ## Install on both VMs
 
-Install `python3`, `sqlite3`, `pcs`, `pacemaker`, `corosync`, `drbd-utils`, `resource-agents`, `fence-agents`, and a DRBD 9 kernel module matching the running kernel. Ubuntu package and DRBD driver availability depend on the release; use the [LINBIT installation guidance](https://linbit.com/drbd-user-guide/drbd-guide-9_0-en/) and verify `modinfo drbd`, `sudo modprobe drbd`, and `drbdadm --version` on each VM. Install the `ocf:linbit:drbd` agent and `fence_vbox` on both VMs; verify `pcs resource describe ocf:linbit:drbd` and `pcs stonith describe fence_vbox`. Locate the DRBD Pacemaker fencing scripts listed in `deploy/counter.res.example` and adjust their paths if necessary.
+Run the following on **each** Ubuntu Server 26.04 VM. It enables `universe`,
+installs the precise 26.04 packages, and ensures that a generic kernel is
+available. `resource-agents-extra` supplies `Filesystem`,
+`resource-agents-base` supplies `IPaddr2`, and `fence-agents-vbox` supplies
+`fence_vbox`.
+
+```sh
+. /etc/os-release
+test "$ID" = ubuntu && test "$VERSION_ID" = 26.04
+test "$(dpkg --print-architecture)" = amd64
+
+sudo apt update
+sudo apt install -y software-properties-common
+sudo add-apt-repository -y universe
+sudo apt update
+sudo apt install -y \
+  linux-generic python3 sqlite3 curl openssh-server \
+  pcs pacemaker corosync drbd-utils \
+  resource-agents-base resource-agents-extra fence-agents-vbox
+```
+
+If installing `linux-generic` selected a new kernel, reboot before continuing,
+then reconnect and run the checks below. The standard Ubuntu Server installer
+normally already uses the generic kernel; this explicit dependency prevents a
+VirtualBox guest using a reduced virtual kernel from silently lacking DRBD.
+
+```sh
+sudo modprobe drbd
+modinfo drbd
+drbdadm --version
+test -x /usr/lib/ocf/resource.d/linbit/drbd
+test -x /usr/lib/ocf/resource.d/heartbeat/Filesystem
+test -x /usr/lib/ocf/resource.d/heartbeat/IPaddr2
+test -x /usr/sbin/fence_vbox
+test -x /usr/lib/drbd/crm-fence-peer.9.sh
+test -x /usr/lib/drbd/crm-unfence-peer.9.sh
+pcs resource describe ocf:linbit:drbd
+pcs stonith describe fence_vbox
+```
+
+All commands above must succeed on both nodes. If `modprobe drbd` fails after
+booting the generic kernel, stop here: install a DRBD 9 module that matches
+the running kernel using the [LINBIT installation guidance](https://linbit.com/drbd-user-guide/drbd-guide-9_0-en/), reboot if required, and repeat the checks. Do not initialize DRBD metadata or configure Pacemaker until they pass. The handler paths in `deploy/counter.res.example` are the paths shipped by Ubuntu 26.04 `drbd-utils`; keep the verification in place after future package upgrades.
+
+The equivalent repeatable preparation is available as a script. From a copy
+of this repository on each VM, run `./scripts/01-prepare-ubuntu.sh`. Add
+`--dry-run` to print every command without changing the VM. The script does
+not reboot automatically if `linux-generic` installs a new kernel.
 
 Copy this repository to each VM (the Python application requires no compilation), then on **each** node:
 
@@ -78,6 +130,16 @@ Do not enable or manually start the service. Pacemaker will own it. The service 
 
 Copy `deploy/counter.res.example` to `/etc/drbd.d/counter.res` on both nodes. Replace the node names, IPs, and disk paths with the real values; both files must contain the same complete configuration. Use `hostname` to confirm that each `on` name matches its node. Confirm the kernel module, backing devices, handler paths, and `sudo drbdadm dump counter` before initialization. Disable independent automatic DRBD startup if enabled, so Pacemaker owns its lifecycle.
 
+`scripts/02-prepare-drbd.sh` provides the corresponding guarded actions. It
+refuses configurations containing the example `REPLACE_` placeholders. Run
+this validation/install step on both nodes after editing the example in the
+repository:
+
+```sh
+./scripts/02-prepare-drbd.sh --resource counter \
+  --config deploy/counter.res.example --install-config validate
+```
+
 **The next command destroys existing data on each selected backing disk.** Verify the devices carefully, then run on **each** VM:
 
 ```sh
@@ -85,11 +147,27 @@ sudo drbdadm create-md counter
 sudo drbdadm up counter
 ```
 
+The scripted form still requires the resource name as its confirmation, and
+must be run on each VM:
+
+```sh
+./scripts/02-prepare-drbd.sh --resource counter \
+  --confirm-resource counter create-metadata
+```
+
 For an entirely new empty pair only, initialize the source on **node1**:
 
 ```sh
 sudo drbdadm primary --force counter
 sudo mkfs.ext4 /dev/drbd0
+```
+
+The corresponding node1-only script command requires an explicit device as
+well as the confirmation:
+
+```sh
+./scripts/02-prepare-drbd.sh --resource counter --device /dev/drbd0 \
+  --confirm-resource counter initialize-source
 ```
 
 Wait for `sudo drbdadm status` to show both replicas `UpToDate`. Then demote and disconnect on both nodes before handing control to Pacemaker:
@@ -100,6 +178,10 @@ sudo drbdadm secondary counter
 # both nodes
 sudo drbdadm down counter
 ```
+
+With the script, run `./scripts/02-prepare-drbd.sh --resource counter --confirm-resource counter --demote handoff`
+on node1 and `./scripts/02-prepare-drbd.sh --resource counter --confirm-resource counter handoff`
+on node2. `--dry-run` is available for every DRBD action.
 
 Never use `primary --force` or recreate metadata as a routine recovery step; it can discard data. Investigate a split brain before choosing an authoritative replica.
 
@@ -120,6 +202,22 @@ Install and configure two `stonith:fence_vbox` devices, one for each VM, using t
 ## Pacemaker resources
 
 After fencing has been configured and verified, the following commands, run on one VM, create the storage and service resources. Replace the VIP and prefix. They use modern `pcs` syntax; inspect `pcs --version` and agent metadata if your distribution differs. The group enforces filesystem → application → IP startup, and the constraints ensure it runs only on the promoted DRBD node.
+
+The same resource setup is available as a script. It deliberately does not
+overwrite existing PCS resources; inspect and remove a failed partial setup
+before rerunning it. Run only after the manual cluster bootstrap and fencing
+verification above:
+
+```sh
+./scripts/03-configure-pacemaker.sh \
+  --resource counter --device /dev/drbd0 --mount-dir /srv/ha-counter \
+  --vip 192.0.2.100 --prefix 24 configure-resources
+```
+
+Use `--dry-run` before `configure-resources` to review the generated PCS
+commands. VirtualBox VM creation, network configuration, `pcs host auth`,
+cluster bootstrap, and `fence_vbox` device definitions remain manual because
+they require site-specific host addresses, credentials, VM UUIDs, and keys.
 
 ```sh
 sudo pcs resource create counter-drbd ocf:linbit:drbd drbd_resource=counter \
