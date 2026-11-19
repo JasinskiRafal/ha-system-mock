@@ -13,14 +13,14 @@ resource counter {
     }
     on node1 {
         device /dev/drbd0;
-        disk /dev/REPLACE_NODE1_DATA_DISK;
-        address 192.0.2.11:7788;
+        disk /mnt/drbd;
+        address 192.168.8.34:7788;
         meta-disk internal;
     }
     on node2 {
         device /dev/drbd0;
-        disk /dev/REPLACE_NODE2_DATA_DISK;
-        address 192.0.2.12:7788;
+        disk /mnt/drbd;
+        address 192.168.8.66:7788;
         meta-disk internal;
     }
 }
